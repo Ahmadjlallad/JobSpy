@@ -34,7 +34,10 @@ log = create_logger("Glassdoor")
 
 class Glassdoor(Scraper):
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
         """
         Initializes GlassdoorScraper with the Glassdoor job search url
@@ -58,7 +61,10 @@ class Glassdoor(Scraper):
         """
         self.scraper_input = scraper_input
         self.scraper_input.results_wanted = min(900, scraper_input.results_wanted)
-        self.base_url = self.scraper_input.country.get_glassdoor_url()
+        glassdoor_country = (
+            self.scraper_input.country_indeed or self.scraper_input.country
+        )
+        self.base_url = glassdoor_country.get_glassdoor_url()
 
         self.session = create_session(
             proxies=self.proxies, ca_cert=self.ca_cert, has_retry=True

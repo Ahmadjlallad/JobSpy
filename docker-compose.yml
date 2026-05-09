@@ -1,0 +1,16 @@
+services:
+  scraper:
+    build:
+      dockerfile: Dockerfile
+    image: jobspy-api:latest
+    container_name: jobspy-api
+    environment:
+      SCRAPER_TOKEN: ${SCRAPER_TOKEN:-change-me}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

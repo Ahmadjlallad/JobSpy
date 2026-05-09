@@ -28,6 +28,7 @@ from jobspy.ziprecruiter import ZipRecruiter
 
 # Update the SCRAPER_MAPPING dictionary in the scrape_jobs function
 
+
 def scrape_jobs(
     site_name: str | list[str] | Site | list[Site] | None = None,
     search_term: str | None = None,
@@ -39,6 +40,7 @@ def scrape_jobs(
     easy_apply: bool | None = None,
     results_wanted: int = 15,
     country_indeed: str = "usa",
+    country: str | None = None,
     proxies: list[str] | str | None = None,
     ca_cert: str | None = None,
     description_format: str = "markdown",
@@ -81,11 +83,13 @@ def scrape_jobs(
             ]
         return site_types
 
-    country_enum = Country.from_string(country_indeed)
+    country_indeed_enum = Country.from_string(country_indeed)
+    country_enum = Country.from_string(country) if country else country_indeed_enum
 
     scraper_input = ScraperInput(
         site_type=get_site_type(),
         country=country_enum,
+        country_indeed=country_indeed_enum,
         search_term=search_term,
         google_search_term=google_search_term,
         location=location,
@@ -185,7 +189,7 @@ def scrape_jobs(
                 else None
             )
 
-            #naukri-specific fields
+            # naukri-specific fields
             job_data["skills"] = (
                 ", ".join(job_data["skills"]) if job_data["skills"] else None
             )

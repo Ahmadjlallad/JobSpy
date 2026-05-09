@@ -28,7 +28,10 @@ log = create_logger("Indeed")
 
 class Indeed(Scraper):
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
         """
         Initializes IndeedScraper with the Indeed API url
@@ -54,10 +57,11 @@ class Indeed(Scraper):
         :return: job_response
         """
         self.scraper_input = scraper_input
-        domain, self.api_country_code = self.scraper_input.country.indeed_domain_value
+        indeed_country = self.scraper_input.country_indeed or self.scraper_input.country
+        domain, self.api_country_code = indeed_country.indeed_domain_value
         self.base_url = f"https://{domain}.indeed.com"
         self.headers = api_headers.copy()
-        self.headers["indeed-co"] = self.scraper_input.country.indeed_domain_value
+        self.headers["indeed-co"] = self.api_country_code
         job_list = []
         page = 1
 

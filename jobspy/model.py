@@ -96,6 +96,7 @@ class Country(Enum):
     ISRAEL = ("israel", "il")
     ITALY = ("italy", "it", "it")
     JAPAN = ("japan", "jp")
+    JORDAN = ("jordan", "jo")
     KUWAIT = ("kuwait", "kw")
     LATVIA = ("latvia", "lv")
     LITHUANIA = ("lithuania", "lt")
@@ -236,6 +237,7 @@ class DescriptionFormat(Enum):
     HTML = "html"
     PLAIN = "plain"
 
+
 class JobPost(BaseModel):
     id: str | None = None
     title: str
@@ -273,12 +275,15 @@ class JobPost(BaseModel):
     job_function: str | None = None
 
     # Naukri specific
-    skills: list[str] | None = None  #from tagsAndSkills
-    experience_range: str | None = None  #from experienceText
-    company_rating: float | None = None  #from ambitionBoxData.AggregateRating
-    company_reviews_count: int | None = None  #from ambitionBoxData.ReviewsCount
-    vacancy_count: int | None = None  #from vacancy
-    work_from_home_type: str | None = None  #from clusters.wfhType (e.g., "Hybrid", "Remote")
+    skills: list[str] | None = None  # from tagsAndSkills
+    experience_range: str | None = None  # from experienceText
+    company_rating: float | None = None  # from ambitionBoxData.AggregateRating
+    company_reviews_count: int | None = None  # from ambitionBoxData.ReviewsCount
+    vacancy_count: int | None = None  # from vacancy
+    work_from_home_type: str | None = (
+        None  # from clusters.wfhType (e.g., "Hybrid", "Remote")
+    )
+
 
 class JobResponse(BaseModel):
     jobs: list[JobPost] = []
@@ -307,6 +312,7 @@ class ScraperInput(BaseModel):
 
     location: str | None = None
     country: Country | None = Country.USA
+    country_indeed: Country | None = None
     distance: int | None = None
     is_remote: bool = False
     job_type: JobType | None = None
@@ -324,7 +330,11 @@ class ScraperInput(BaseModel):
 
 class Scraper(ABC):
     def __init__(
-        self, site: Site, proxies: list[str] | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        site: Site,
+        proxies: list[str] | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
         self.site = site
         self.proxies = proxies
