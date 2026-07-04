@@ -25,7 +25,10 @@ class BaytScraper(Scraper):
     band_delay = 3
 
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
         super().__init__(Site.BAYT, proxies=proxies, ca_cert=ca_cert)
         self.scraper_input = None
@@ -86,8 +89,16 @@ class BaytScraper(Scraper):
         Grabs the job results for the given query and page number.
         """
         try:
-            url = f"{self.base_url}/en/international/jobs/{query}-jobs/?page={page}"
-            response = self.session.get(url)
+            slug = query.strip().replace(" ", "-").lower()
+            url = f"{self.base_url}/en/international/jobs/{slug}-jobs/?page={page}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Referer": "https://www.bayt.com/",
+            }
+            response = self.session.get(url, headers=headers)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             job_listings = soup.find_all("li", attrs={"data-js-job": ""})

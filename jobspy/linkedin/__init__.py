@@ -18,7 +18,7 @@ from jobspy.linkedin.util import (
     job_type_code,
     parse_job_type,
     parse_job_level,
-    parse_company_industry
+    parse_company_industry,
 )
 from jobspy.model import (
     JobPost,
@@ -51,7 +51,10 @@ class LinkedIn(Scraper):
     jobs_per_page = 25
 
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
         """
         Initializes LinkedInScraper with the LinkedIn job search url
@@ -70,6 +73,9 @@ class LinkedIn(Scraper):
         self.country = "worldwide"
         self.job_url_direct_regex = re.compile(r'(?<=\?url=)[^"]+')
 
+    def continue_search(self, scraper_input, job_list, start) -> bool:
+        return len(job_list) < scraper_input.results_wanted and start < 1000
+
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         """
         Scrapes LinkedIn for jobs with scraper_input criteria
@@ -84,10 +90,23 @@ class LinkedIn(Scraper):
         seconds_old = (
             scraper_input.hours_old * 3600 if scraper_input.hours_old else None
         )
-        continue_search = (
-            lambda: len(job_list) < scraper_input.results_wanted and start < 1000
+
+        searched_country = (
+            self._resolve_country(scraper_input.location)
+            if scraper_input.location
+            else None
         )
-        while continue_search():
+        # prefer country-level geoId for precise LinkedIn geo-pinning
+        geo_query = (
+            searched_country.value[0].split(",")[0]
+            if searched_country
+            else scraper_input.location
+        )
+        geo_id = self._fetch_geo_id(geo_query) if geo_query else None
+
+        while self.continue_search(
+            start=start, job_list=job_list, scraper_input=scraper_input
+        ):
             request_count += 1
             log.info(
                 f"search page: {request_count} / {math.ceil(scraper_input.results_wanted / 10)}"
@@ -111,6 +130,8 @@ class LinkedIn(Scraper):
                     else None
                 ),
             }
+            if geo_id:
+                params["geoId"] = geo_id
             if seconds_old is not None:
                 params["f_TPR"] = f"r{seconds_old}"
 
@@ -123,9 +144,7 @@ class LinkedIn(Scraper):
                 )
                 if response.status_code not in range(200, 400):
                     if response.status_code == 429:
-                        err = (
-                            f"429 Response - Blocked by LinkedIn for too many requests"
-                        )
+                        err = "429 Response - Blocked by LinkedIn for too many requests"
                     else:
                         err = f"LinkedIn response status code {response.status_code}"
                         err += f" - {response.text}"
@@ -133,7 +152,7 @@ class LinkedIn(Scraper):
                     return JobResponse(jobs=job_list)
             except Exception as e:
                 if "Proxy responded with" in str(e):
-                    log.error(f"LinkedIn: Bad proxy")
+                    log.error("LinkedIn: Bad proxy")
                 else:
                     log.error(f"LinkedIn: {str(e)}")
                 return JobResponse(jobs=job_list)
@@ -157,18 +176,76 @@ class LinkedIn(Scraper):
                         fetch_desc = scraper_input.linkedin_fetch_description
                         job_post = self._process_job(job_card, job_id, fetch_desc)
                         if job_post:
+                            if searched_country and not self._is_location_match(
+                                job_post.location, searched_country
+                            ):
+                                continue
                             job_list.append(job_post)
-                        if not continue_search():
+                        if not self.continue_search(
+                            start=start,
+                            job_list=job_list,
+                            scraper_input=scraper_input,
+                        ):
                             break
                     except Exception as e:
                         raise LinkedInException(str(e))
 
-            if continue_search():
+            if self.continue_search(
+                start=start,
+                job_list=job_list,
+                scraper_input=scraper_input,
+            ):
                 time.sleep(random.uniform(self.delay, self.delay + self.band_delay))
                 start += len(job_cards)
 
         job_list = job_list[: scraper_input.results_wanted]
         return JobResponse(jobs=job_list)
+
+    def _fetch_geo_id(self, location: str) -> str | None:
+        try:
+            response = self.session.get(
+                f"{self.base_url}/jobs-guest/api/typeaheadHits",
+                params={
+                    "query": location,
+                    "typeaheadType": "GEO",
+                    "geoTypes": "POPULATED_PLACE,ADMIN_DIVISION_2,MARKET_AREA,COUNTRY_REGION",
+                },
+                timeout=5,
+            )
+            if response.status_code == 200:
+                hits = response.json()
+                if not isinstance(hits, list) or not hits:
+                    return None
+                # prefer exact displayName match, else take first result
+                location_lower = location.lower()
+                for hit in hits:
+                    if hit.get("displayName", "").lower() == location_lower:
+                        return str(hit["id"])
+                return str(hits[0]["id"])
+        except Exception:
+            pass
+        return None
+
+    def _resolve_country(self, location: str) -> Country | None:
+        for part in reversed([p.strip() for p in location.split(",")]):
+            try:
+                return Country.from_string(part)
+            except ValueError:
+                continue
+        return None
+
+    def _is_location_match(self, location: Location, searched_country: Country) -> bool:
+        if (
+            isinstance(location.country, Country)
+            and location.country != Country.WORLDWIDE
+        ):
+            return location.country == searched_country
+        if location.state:
+            try:
+                return Country.from_string(location.state) == searched_country
+            except ValueError:
+                pass
+        return True
 
     def _process_job(
         self, job_card: Tag, job_id: str, full_descr: bool

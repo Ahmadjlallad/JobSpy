@@ -16,6 +16,12 @@ log = logging.getLogger("jobspy.api")
 
 API_TOKEN = os.environ.get("SCRAPER_TOKEN", "")
 
+if not API_TOKEN:
+    log.warning(
+        "SCRAPER_TOKEN is not set: the /scrape endpoint is UNAUTHENTICATED. "
+        "Set SCRAPER_TOKEN before exposing this service beyond localhost."
+    )
+
 app = FastAPI(title="jobspy api", version="0.1.0")
 
 
@@ -59,6 +65,13 @@ class ScrapeRequest(BaseModel):
     hours_old: int | None = Field(default=None, ge=1)
     description_format: DescriptionFormatName = "markdown"
     linkedin_fetch_description: bool = False
+    easy_apply: bool | None = None
+    proxies: list[str] | str | None = None
+    ca_cert: str | None = None
+    offset: int | None = 0
+    enforce_annual_salary: bool = False
+    linkedin_company_ids: list[int] | None = None
+    user_agent: str | None = None
 
 
 class JobRecord(BaseModel):
@@ -164,12 +177,19 @@ def scrape(payload: ScrapeRequest) -> ScrapeResponse:
             distance=payload.distance,
             is_remote=payload.is_remote,
             job_type=payload.job_type,
+            easy_apply=payload.easy_apply,
             results_wanted=payload.results_wanted,
             country=payload.country,
             country_indeed=payload.country_indeed,
             hours_old=payload.hours_old,
             description_format=payload.description_format,
             linkedin_fetch_description=payload.linkedin_fetch_description,
+            proxies=payload.proxies,
+            ca_cert=payload.ca_cert,
+            offset=payload.offset,
+            enforce_annual_salary=payload.enforce_annual_salary,
+            linkedin_company_ids=payload.linkedin_company_ids,
+            user_agent=payload.user_agent,
             verbose=1,
         )
     except ValueError as exc:
