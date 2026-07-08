@@ -5,9 +5,13 @@ services:
     image: jobspy-api:latest
     container_name: jobspy-api
     environment:
-      SCRAPER_TOKEN: ${SCRAPER_TOKEN:-change-me}
+      # Required — container refuses to boot without it (SCRAPER_ENV=production).
+      SCRAPER_TOKEN: ${SCRAPER_TOKEN:?SCRAPER_TOKEN must be set}
+      SCRAPER_ENV: production
+      SCRAPER_MAX_CONCURRENCY: ${SCRAPER_MAX_CONCURRENCY:-3}
     ports:
-      - "8001:8001"
+      # Bind to loopback only; put a TLS-terminating reverse proxy in front to expose it.
+      - "127.0.0.1:8001:8001"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]

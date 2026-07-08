@@ -21,6 +21,14 @@ RUN poetry install --only main -E api --no-root \
 
 COPY api ./api
 
+# Run as a non-root user.
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+# Fail closed unless a token is explicitly provided in production.
+ENV SCRAPER_ENV=production
+
 EXPOSE 8001
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001"]

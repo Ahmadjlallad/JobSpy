@@ -8,6 +8,8 @@ installed deps (fastapi, httpx via TestClient) are used; the underlying
 
 from __future__ import annotations
 
+import threading
+import time
 from unittest import mock
 
 import pandas as pd
@@ -131,6 +133,42 @@ def test_scrape_maps_unexpected_error_to_502() -> None:
         client = TestClient(main.app)
         resp = client.post("/scrape", json={})
         assert resp.status_code == 502
+
+
+def test_scrape_returns_503_when_at_capacity() -> None:
+    # Drain the admission semaphore so no slot is available.
+    drained = threading.BoundedSemaphore(1)
+    drained.acquire()
+    with mock.patch.object(main, "API_TOKEN", ""), mock.patch.object(
+        main, "_semaphore", drained
+    ), mock.patch.object(main, "scrape_jobs", return_value=_sample_df()):
+        client = TestClient(main.app)
+        resp = client.post("/scrape", json={})
+        assert resp.status_code == 503
+
+
+def test_scrape_returns_504_on_timeout() -> None:
+    sem = threading.BoundedSemaphore(1)
+
+    def slow_scrape(**_kwargs):
+        time.sleep(0.4)
+        return _sample_df()
+
+    with mock.patch.object(main, "API_TOKEN", ""), mock.patch.object(
+        main, "_semaphore", sem
+    ), mock.patch.object(main, "SCRAPE_TIMEOUT", 0.05), mock.patch.object(
+        main, "scrape_jobs", side_effect=slow_scrape
+    ):
+        client = TestClient(main.app)
+        resp = client.post("/scrape", json={})
+        assert resp.status_code == 504, resp.status_code
+        # The slot is deliberately NOT released synchronously on timeout: the
+        # shielded scrape thread is still running, so the slot stays held until
+        # it finishes (released via a loop callback that runs continuously under
+        # uvicorn). Right after the response the slot must therefore be taken.
+        assert sem.acquire(blocking=False) is False
+        # Let the shielded thread finish so the executor is idle for teardown.
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":

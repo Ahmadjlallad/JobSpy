@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import math
 import os
+import secrets
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Annotated, Literal
 
@@ -15,12 +20,32 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("jobspy.api")
 
 API_TOKEN = os.environ.get("SCRAPER_TOKEN", "")
+SCRAPER_ENV = os.environ.get("SCRAPER_ENV", "local")
+
+# Cap simultaneous scrapes: parallel same-IP hits to LinkedIn/Indeed are the
+# fastest route to an IP ban, and each scrape is memory/thread heavy.
+MAX_CONCURRENCY = max(1, int(os.environ.get("SCRAPER_MAX_CONCURRENCY", "3")))
+# Hard ceiling per scrape so a hung upstream fetch cannot pin a worker forever.
+SCRAPE_TIMEOUT = max(1, int(os.environ.get("SCRAPER_SCRAPE_TIMEOUT", "300")))
+
+# Fail closed: refuse to boot an unauthenticated (or default-token) service in
+# production instead of silently exposing an open /scrape endpoint.
+if SCRAPER_ENV == "production" and (not API_TOKEN or API_TOKEN == "change-me"):
+    raise RuntimeError(
+        "SCRAPER_TOKEN must be set to a strong value when SCRAPER_ENV=production."
+    )
 
 if not API_TOKEN:
     log.warning(
         "SCRAPER_TOKEN is not set: the /scrape endpoint is UNAUTHENTICATED. "
         "Set SCRAPER_TOKEN before exposing this service beyond localhost."
     )
+
+# One executor sized to the concurrency cap, plus a semaphore that admits at
+# most that many in-flight scrapes and rejects the overflow with 503 rather
+# than queueing unbounded work.
+_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY)
+_semaphore = threading.BoundedSemaphore(MAX_CONCURRENCY)
 
 app = FastAPI(title="jobspy api", version="0.1.0")
 
@@ -42,7 +67,10 @@ DescriptionFormatName = Literal["markdown", "html", "plain"]
 def require_token(authorization: Annotated[str | None, Header()] = None) -> None:
     if not API_TOKEN:
         return
-    if authorization != f"Bearer {API_TOKEN}":
+    expected = f"Bearer {API_TOKEN}"
+    # Constant-time comparison so a caller cannot recover the token by
+    # measuring response timing.
+    if authorization is None or not secrets.compare_digest(authorization, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing bearer token",
@@ -153,12 +181,39 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _run_scrape(payload: ScrapeRequest) -> pd.DataFrame:
+    """Blocking scrape; runs inside the bounded executor."""
+    return scrape_jobs(
+        site_name=list(payload.site_names),
+        search_term=payload.search_term,
+        google_search_term=payload.google_search_term,
+        location=payload.location,
+        distance=payload.distance,
+        is_remote=payload.is_remote,
+        job_type=payload.job_type,
+        easy_apply=payload.easy_apply,
+        results_wanted=payload.results_wanted,
+        country=payload.country,
+        country_indeed=payload.country_indeed,
+        hours_old=payload.hours_old,
+        description_format=payload.description_format,
+        linkedin_fetch_description=payload.linkedin_fetch_description,
+        proxies=payload.proxies,
+        ca_cert=payload.ca_cert,
+        offset=payload.offset,
+        enforce_annual_salary=payload.enforce_annual_salary,
+        linkedin_company_ids=payload.linkedin_company_ids,
+        user_agent=payload.user_agent,
+        verbose=1,
+    )
+
+
 @app.post(
     "/scrape",
     response_model=ScrapeResponse,
     dependencies=[Depends(require_token)],
 )
-def scrape(payload: ScrapeRequest) -> ScrapeResponse:
+async def scrape(payload: ScrapeRequest) -> ScrapeResponse:
     log.info(
         "scrape request: sites=%s term=%r location=%r country=%r country_indeed=%r results=%d",
         payload.site_names,
@@ -168,39 +223,46 @@ def scrape(payload: ScrapeRequest) -> ScrapeResponse:
         payload.country_indeed,
         payload.results_wanted,
     )
-    try:
-        df = scrape_jobs(
-            site_name=list(payload.site_names),
-            search_term=payload.search_term,
-            google_search_term=payload.google_search_term,
-            location=payload.location,
-            distance=payload.distance,
-            is_remote=payload.is_remote,
-            job_type=payload.job_type,
-            easy_apply=payload.easy_apply,
-            results_wanted=payload.results_wanted,
-            country=payload.country,
-            country_indeed=payload.country_indeed,
-            hours_old=payload.hours_old,
-            description_format=payload.description_format,
-            linkedin_fetch_description=payload.linkedin_fetch_description,
-            proxies=payload.proxies,
-            ca_cert=payload.ca_cert,
-            offset=payload.offset,
-            enforce_annual_salary=payload.enforce_annual_salary,
-            linkedin_company_ids=payload.linkedin_company_ids,
-            user_agent=payload.user_agent,
-            verbose=1,
+
+    # Admit at most MAX_CONCURRENCY scrapes; shed load instead of queueing.
+    if not _semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="scraper is at capacity, retry shortly",
         )
+
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(_executor, functools.partial(_run_scrape, payload))
+    released = False
+    try:
+        # shield keeps the executor task running to completion even when the
+        # timeout cancels our await, so the concurrency slot is only released
+        # once the (uninterruptible) scrape thread actually finishes.
+        df = await asyncio.wait_for(asyncio.shield(future), timeout=SCRAPE_TIMEOUT)
+        _semaphore.release()
+        released = True
+    except asyncio.TimeoutError as exc:
+        future.add_done_callback(lambda _: _semaphore.release())
+        released = True
+        log.warning("scrape timed out after %ss", SCRAPE_TIMEOUT)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="scrape timed out",
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except Exception as exc:
+        # Do not leak internal exception text (may contain proxy creds/paths).
         log.exception("scrape failed")
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="upstream scrape failed",
         ) from exc
+    finally:
+        if not released:
+            _semaphore.release()
 
     jobs = _df_to_jobs(df)
     return ScrapeResponse(count=len(jobs), jobs=jobs)
